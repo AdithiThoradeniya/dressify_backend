@@ -1,0 +1,28 @@
+{
+  "type": "module",
+  "dependencies": {
+    "@gradio/client": "^1.13.0",
+    "axios": "^1.8.1",
+    "bcrypt": "^5.1.1",
+    "bcryptjs": "^3.0.2",
+    "blob-polyfill": "^9.0.20240710",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "ejs": "^3.1.10",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "firebase": "^11.4.0",
+    "firebase-admin": "^13.2.0",
+    "form-data": "^4.0.2",
+    "fs": "^0.0.1-security",
+    "jsonwebtoken": "^9.0.2",
+    "mongodb": "^6.14.2",
+    "mongoose": "^8.9.5",
+    "multer": "^1.4.5-lts.1",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
+    "passport-jwt": "^4.0.1",
+    "path": "^0.12.7",
+    "sharp": "^0.33.5"
+  }
+}
