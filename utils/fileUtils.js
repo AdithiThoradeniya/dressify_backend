@@ -18,22 +18,6 @@ export function getContentType(filePath) {
   }
 }
 
-export const cleanupFiles = (files) => {
-  try {
-    if (!files) return;
-    Object.keys(files).forEach(fieldName => {
-      files[fieldName].forEach(file => {
-        if (fsSync.existsSync(file.path)) {
-          fsSync.unlinkSync(file.path);
-          console.log(`Cleaned up temporary file: ${file.path}`);
-        }
-      });
-    });
-  } catch (error) {
-    console.error("Error during file cleanup:", error);
-  }
-};
-
 export const validateImage = (file) => {
   if (!file) throw new Error('File is required');
   if (!CONFIG.ALLOWED_MIME_TYPES.includes(file.mimetype)) {
@@ -41,15 +25,6 @@ export const validateImage = (file) => {
   }
   if (file.size > CONFIG.MAX_FILE_SIZE) {
     throw new Error(`${file.originalname} exceeds the ${CONFIG.MAX_FILE_SIZE / (1024 * 1024)}MB size limit`);
-  }
-};
-
-export const fileToBlob = async (filePath) => {
-  try {
-    const buffer = await fs.readFile(filePath);
-    return new Blob([buffer], { type: getContentType(filePath) });
-  } catch (error) {
-    throw new Error(`Failed to convert file to blob: ${error.message}`);
   }
 };
 

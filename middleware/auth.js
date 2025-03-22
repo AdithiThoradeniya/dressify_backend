@@ -4,7 +4,7 @@ import { Strategy as JwtStrategy, ExtractJwt } from 'passport-jwt';
 import User from '../models/User.js';
 import { generateToken } from '../utils/jwtUtils.js';
 import session from 'express-session';
-import jwt from 'jsonwebtoken'; // Add this import for the verifyToken function
+import jwt from 'jsonwebtoken'; 
 
 // Configure express-session
 const sessionMiddleware = session({

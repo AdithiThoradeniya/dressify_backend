@@ -1,28 +1,15 @@
-import path from 'path';
 import express from 'express';
-import fs from 'fs/promises';
-import fsSync from 'fs';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
 import { upload } from '../middleware/setUpMiddleware.js';
 import { processImages } from '../services/tryOnService.js';
-import { validateImage, cleanupFiles } from '../utils/fileUtils.js';
+import { validateImage } from '../utils/fileUtils.js';
 import { CONFIG } from '../config/config.js';
 import Image from '../models/Clothing.js';
 import { ensureAuthenticated } from '../middleware/auth.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import mongoose from 'mongoose';
 
 const app = express();
-app.use(express.json()); // For parsing JSON request bodies
+app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-
-// Ensure uploads directory exists
-const uploadsDir = path.join(dirname(dirname(__dirname)), 'uploads');
-if (!fsSync.existsSync(uploadsDir)) {
-  fsSync.mkdirSync(uploadsDir, { recursive: true });
-}
 
 // Track ongoing requests to prevent duplicates
 const ongoingRequests = new Map();
@@ -57,8 +44,8 @@ export const tryOnRoutes = (app) => {
       }
 
       // Better duplicate request detection with file information
-      const frontFilename = req.files.front[0] ? req.files.front[0].filename : '';
-      const garmentFilename = req.files.garment[0] ? req.files.garment[0].filename : '';
+      const frontFilename = req.files.front[0] ? req.files.front[0].originalname : '';
+      const garmentFilename = req.files.garment[0] ? req.files.garment[0].originalname : '';
       const requestSignature = `${req.user._id}-${frontFilename}-${garmentFilename}`;
       
       // Check for exact duplicate requests (same user and files)
@@ -107,7 +94,6 @@ export const tryOnRoutes = (app) => {
         validateImage(front[0]);
         validateImage(garment[0]);
       } catch (error) {
-        cleanupFiles(req.files);
         clearOngoingRequest();
         return res.status(400).json({
           error: error.message,
@@ -115,10 +101,70 @@ export const tryOnRoutes = (app) => {
         });
       }
 
+      // Store images in MongoDB immediately
+      const frontBuffer = front[0].buffer;
+      const garmentBuffer = garment[0].buffer;
+      
+      // Check if this front/garment came from the shop
+      const frontIsFromShop = front[0].originalname && front[0].originalname.includes('shop_');
+      const garmentIsFromShop = garment[0].originalname && garment[0].originalname.includes('shop_');
+      
+      // Generate unique filenames
+      const frontFilenameDb = `front_${req.user._id}_${Date.now()}_${front[0].originalname}`;
+      const garmentFilenameDb = `garment_${req.user._id}_${Date.now()}_${garment[0].originalname}`;
+      
+      // Create MongoDB documents for front and garment
+      let frontImageDoc, garmentImageDoc;
+      
+      try {
+        // Save images to MongoDB
+        [frontImageDoc, garmentImageDoc] = await Promise.all([
+          Image.create({
+            filename: frontFilenameDb,
+            fileUrl: `${CONFIG.BACKEND_URL}/api/images/${frontFilenameDb}`, 
+            type: 'front',
+            userId: req.user._id,
+            isFromShop: frontIsFromShop || false,
+            data: frontBuffer
+          }),
+          Image.create({
+            filename: garmentFilenameDb,
+            fileUrl: `${CONFIG.BACKEND_URL}/api/images/${garmentFilenameDb}`,
+            type: 'garment',
+            userId: req.user._id,
+            isFromShop: garmentIsFromShop || false,
+            data: garmentBuffer
+          })
+        ]);
+        
+        console.log("Successfully saved front and garment images to MongoDB");
+      } catch (dbError) {
+        console.error("Failed to save images to MongoDB:", dbError);
+        clearOngoingRequest();
+        return res.status(500).json({
+          error: "Failed to store uploaded images",
+          success: false
+        });
+      }
+
+      // Create modified files object with the MongoDB IDs
+      const processFiles = {
+        front: [{ 
+          buffer: frontBuffer,
+          mimetype: front[0].mimetype,
+          mongoId: frontImageDoc._id 
+        }],
+        garment: [{ 
+          buffer: garmentBuffer,
+          mimetype: garment[0].mimetype,
+          mongoId: garmentImageDoc._id 
+        }]
+      };
+
       let result;
       try {
         console.log("Calling processImages service...");
-        result = await processImages(req.files);
+        result = await processImages(processFiles);
         console.log("ProcessImages service returned successfully");
       } catch (processingError) {
         console.error("Error in processing service:", processingError);
@@ -131,104 +177,32 @@ export const tryOnRoutes = (app) => {
         throw new Error("Invalid image data received from model");
       }
 
-      // Verify the result is base64 data before writing to file
+      // Verify the result is base64 data
       if (!result.match(/^[A-Za-z0-9+/=]+$/)) {
         console.error("Result is not valid base64 data:", result.substring(0, 100) + "...");
         clearOngoingRequest();
         throw new Error("Invalid base64 data received from model");
       }
 
+      // Convert base64 to buffer for MongoDB storage
+      const generatedBuffer = Buffer.from(result, 'base64');
       const outputFilename = `generated-${Date.now()}.png`;
-      const outputImagePath = path.join(uploadsDir, outputFilename);
       
-      console.log(`Saving generated image to: ${outputImagePath}`);
+      // Save generated image to MongoDB
+      let generatedImageDoc;
       try {
-        await fs.writeFile(outputImagePath, Buffer.from(result, 'base64'));
-        console.log("Image saved successfully");
-      } catch (fileError) {
-        console.error("Error saving file:", fileError);
-        clearOngoingRequest();
-        throw new Error(`Failed to save generated image: ${fileError.message}`);
-      }
-      
-      // Save image references to MongoDB with user ID
-      try {
-        // First check if images are already saved
-        const [existingFront, existingGarment, existingGenerated] = await Promise.all([
-          Image.findOne({ 
-            filename: front[0].filename, 
-            userId: req.user._id, 
-            type: 'front'
-          }),
-          Image.findOne({
-            filename: garment[0].filename,
-            userId: req.user._id,
-            type: 'garment'
-          }),
-          Image.findOne({
-            filename: outputFilename,
-            userId: req.user._id,
-            type: 'generated'
-          })
-        ]);
+        generatedImageDoc = await Image.create({
+          filename: outputFilename,
+          fileUrl: `${CONFIG.BACKEND_URL}/api/images/${outputFilename}`,
+          type: 'generated',
+          userId: req.user._id,
+          data: generatedBuffer
+        });
         
-        // Only insert documents that don't already exist
-        const imagesToInsert = [];
-        
-        if (!existingFront) {
-          // Check if this came from the shop 
-          const isFromShop = front[0].originalname && front[0].originalname.includes('shop_');
-          
-          imagesToInsert.push({ 
-            filename: front[0].filename, 
-            fileUrl: `${CONFIG.BACKEND_URL}/uploads/${front[0].filename}`, 
-            type: 'front', 
-            userId: req.user._id,
-            isFromShop: isFromShop || false
-          });
-        }
-        
-        if (!existingGarment) {
-          // Check if this garment came from the shop
-          const isFromShop = garment[0].originalname && garment[0].originalname.includes('shop_');
-          
-          imagesToInsert.push({ 
-            filename: garment[0].filename, 
-            fileUrl: `${CONFIG.BACKEND_URL}/uploads/${garment[0].filename}`, 
-            type: 'garment', 
-            userId: req.user._id,
-            isFromShop: isFromShop || false
-          });
-        }
-        
-        // Only add the generated image if it doesn't already exist
-        if (!existingGenerated) {
-          imagesToInsert.push({ 
-            filename: outputFilename, 
-            fileUrl: `${CONFIG.BACKEND_URL}/uploads/${outputFilename}`, 
-            type: 'generated', 
-            userId: req.user._id 
-          });
-        }
-        
-        // Use insertMany with ordered: false to skip duplicates
-        if (imagesToInsert.length > 0) {
-          // Use a findOneAndUpdate with upsert for each image to guarantee no duplicates
-          await Promise.all(imagesToInsert.map(image => 
-            Image.findOneAndUpdate(
-              { filename: image.filename, userId: image.userId, type: image.type },
-              image,
-              { upsert: true, new: true }
-            )
-          ));
-          
-          console.log(`Saved ${imagesToInsert.length} image references to database`);
-        } else {
-          console.log("No new images to save to database");
-        }
+        console.log("Successfully saved generated image to MongoDB");
       } catch (dbError) {
-        console.error("Failed to save image references to database:", dbError);
-        // Continue with the response even if DB save fails
+        console.error("Failed to save generated image to MongoDB:", dbError);
+        // Continue with the response even if DB save fails for the generated image
       }
       
       // Clear the ongoing request marker since processing is complete
@@ -236,7 +210,7 @@ export const tryOnRoutes = (app) => {
       
       res.json({
         success: true,
-        imageUrl: `${CONFIG.BACKEND_URL}/uploads/${outputFilename}`,
+        imageUrl: `${CONFIG.BACKEND_URL}/api/images/${outputFilename}`,
         imageData: `data:image/png;base64,${result}`
       });
 
@@ -244,11 +218,69 @@ export const tryOnRoutes = (app) => {
       console.error("Error processing try-on request:", error);
       // Make sure to remove user from ongoing requests on error
       ongoingRequests.delete(req.user._id);
-      if (req.files) cleanupFiles(req.files);
       res.status(500).json({
         error: error.message || "An unexpected error occurred while processing your request.",
         success: false
       });
     }
   });
+  
+  // Add a route to serve images directly from MongoDB
+  app.get("/api/images/:filename", ensureAuthenticated, async (req, res) => {
+    try {
+      const image = await Image.findOne({ filename: req.params.filename });
+      
+      if (!image || !image.data) {
+        return res.status(404).json({
+          error: "Image not found",
+          success: false
+        });
+      }
+      
+      // Determine content type based on filename
+      const contentType = req.params.filename.endsWith('.png') ? 'image/png' : 'image/jpeg';
+      
+      // Set proper content type header
+      res.set('Content-Type', contentType);
+      
+      // Send the image data
+      res.send(image.data);
+      
+    } catch (error) {
+      console.error("Error retrieving image:", error);
+      res.status(500).json({
+        error: "Failed to retrieve image",
+        success: false
+      });
+    }
+  });
 };
+app.post("/api/admin/clear-requests", ensureAuthenticated, async (req, res) => {
+  try {
+    // Check if user has admin privileges
+    if (!req.user.isAdmin) {
+      return res.status(403).json({
+        error: "Unauthorized. Admin privileges required.",
+        success: false
+      });
+    }
+    
+    // Clear the map of ongoing requests
+    const requestCount = ongoingRequests.size;
+    ongoingRequests.clear();
+    
+    console.log(`Admin user ${req.user._id} cleared ${requestCount} ongoing requests`);
+    
+    return res.json({
+      success: true,
+      message: `Successfully cleared ${requestCount} ongoing requests`,
+      clearedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error("Error clearing ongoing requests:", error);
+    return res.status(500).json({
+      error: "Failed to clear ongoing requests",
+      success: false
+    });
+  }
+});

@@ -9,8 +9,14 @@ const ImageSchema = new mongoose.Schema({
     required: true 
   },
   uploadDate: { type: Date, default: Date.now },
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }, 
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  isFromShop: { type: Boolean, default: false },
+  data: { type: Buffer } 
 });
+
+// Index for faster queries
+ImageSchema.index({ userId: 1, type: 1 });
+ImageSchema.index({ filename: 1 });
 
 const Image = mongoose.model('Image', ImageSchema);
 

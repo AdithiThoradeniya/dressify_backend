@@ -1,13 +1,7 @@
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { dirname } from 'path';
 import { client } from '@gradio/client';
 import { CONFIG } from '../config/config.js';
-import { fileToBlob, downloadImage } from '../utils/fileUtils.js';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
+import { Blob } from 'blob-polyfill';
+import axios from 'axios';
 
 // Create a cache for the Gradio client to prevent "Session not found" errors
 let gradioClientCache = null;
@@ -29,6 +23,11 @@ const getGradioClient = async () => {
   
   console.log('Using cached Gradio client');
   return gradioClientCache;
+};
+
+// Convert buffer to blob directly
+const bufferToBlob = (buffer, mimetype) => {
+  return new Blob([buffer], { type: mimetype });
 };
 
 export const processImages = async (files) => {
@@ -54,11 +53,9 @@ export const processImages = async (files) => {
       
       console.log('Gradio client initialized successfully');
       
-      // Convert files to blobs
-      const [frontBlob, garmentBlob] = await Promise.all([
-        fileToBlob(files.front[0].path),
-        fileToBlob(files.garment[0].path)
-      ]);
+      // Convert buffers to blobs directly without saving to disk
+      const frontBlob = bufferToBlob(files.front[0].buffer, files.front[0].mimetype);
+      const garmentBlob = bufferToBlob(files.garment[0].buffer, files.garment[0].mimetype);
 
       // Fix the parameter that's causing errors (denoising steps)
       const denoisingSteps = Math.min(CONFIG.DENOISING_STEPS, 40);
@@ -190,5 +187,51 @@ export const processImages = async (files) => {
       console.log(`Waiting ${delay}ms before retry...`);
       await new Promise(resolve => setTimeout(resolve, delay));
     }
+  }
+};
+
+export const downloadImage = async (url) => {
+  try {
+    console.log(`Attempting to download image from: ${url}`);
+    
+    // Add retry logic for temporary failures
+    let retries = 3;
+    let lastError = null;
+    
+    while (retries > 0) {
+      try {
+        const response = await axios.get(url, {
+          responseType: 'arraybuffer',
+          timeout: CONFIG.REQUEST_TIMEOUT,
+          maxContentLength: 10 * 1024 * 1024,
+          headers: {
+            'Accept': 'image/*, application/octet-stream',
+            'User-Agent': 'DressifyApp/1.0'
+          },
+          validateStatus: function (status) {
+            return status >= 200 && status < 300; // Reject status outside 2xx range
+          }
+        });
+        
+        if (response.status === 200) {
+          console.log(`Successfully downloaded image, size: ${response.data.length} bytes`);
+          return Buffer.from(response.data);
+        }
+        
+        throw new Error(`Request failed with status code ${response.status}`);
+      } catch (err) {
+        lastError = err;
+        retries--;
+        if (retries > 0) {
+          console.log(`Download failed (${err.message}), retrying (${retries} attempts left)...`);
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+    }
+    
+    throw new Error(`Failed to download image after multiple attempts: ${lastError.message}`);
+  } catch (error) {
+    console.error(`Download error details:`, error);
+    throw new Error(`Failed to download result image: ${error.message}`);
   }
 };
