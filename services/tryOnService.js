@@ -39,7 +39,7 @@ export const processImages = async (files) => {
       
       // Always get a fresh client on retries
       if (retries > 0) {
-        console.log('Forcing new Gradio client for retry attempt');
+        console.log('Forcing new Gradio client to retry');
         gradioClientCache = null;
       }
       
